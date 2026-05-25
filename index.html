@@ -980,13 +980,47 @@
 
         function skey(key) { return `tracker_${currentProfile}_${key}`; }
 
+        let remoteSynced = false;
+
         function loadData() {
+            // First load localStorage (instant UI)
             try {
                 const w = localStorage.getItem(skey('weeks'));
                 weekData = w ? JSON.parse(w) : {};
                 const r = localStorage.getItem(skey('routine'));
                 routineDone = r ? JSON.parse(r) : {};
             } catch(e) { weekData = {}; routineDone = {}; }
+
+            // Then merge from data.json (cross-device sync, read-only from browser)
+            if (!remoteSynced) {
+                remoteSynced = true;
+                fetch('data.json')
+                    .then(r => r.ok ? r.json() : null)
+                    .then(remote => {
+                        if (!remote || !remote.profiles) return;
+                        const rp = remote.profiles[currentProfile];
+                        if (!rp) return;
+                        // Merge remote week data into local weekData (local wins for same keys)
+                        if (rp.weeks) {
+                            for (const wk in rp.weeks) {
+                                if (!weekData[wk]) weekData[wk] = {};
+                                for (const k in rp.weeks[wk]) {
+                                    // Only apply if local doesn't have this key
+                                    if (weekData[wk][k] === undefined) {
+                                        weekData[wk][k] = rp.weeks[wk][k];
+                                    }
+                                }
+                            }
+                        }
+                        // Persist merged data to localStorage so UI reflects it
+                        try {
+                            localStorage.setItem(skey('weeks'), JSON.stringify(weekData));
+                        } catch(e2) {}
+                        // Re-render if DOM is ready
+                        if (document.getElementById('weeksContainer')) render();
+                    })
+                    .catch(() => {});
+            }
         }
 
         function saveData() {
@@ -994,6 +1028,17 @@
                 localStorage.setItem(skey('weeks'), JSON.stringify(weekData));
                 localStorage.setItem(skey('routine'), JSON.stringify(routineDone));
             } catch(e) {}
+            // Push to GitHub via local webhook relay (Node.js server on Ryan's PC)
+            // Relay auto-forwards to ryslong-boobs/workout-tracker data.json
+            try {
+                const payload = JSON.stringify({
+                    profile: currentProfile,
+                    weekKey: Object.keys(weekData).slice(-1)[0] || '',
+                    dayKey: '',
+                    value: undefined
+                });
+                navigator.sendBeacon && navigator.sendBeacon('http://127.0.0.1:3456/sync', payload);
+            } catch(e2) {}
         }
 
         function setProfile(p) {
